@@ -36,6 +36,10 @@ from datetime import datetime
 IS_MACOS = platform.system() == "Darwin"
 IS_WINDOWS = platform.system() == "Windows"
 
+# Windows 平台需要 ctypes 调用 Win32 API 操作窗口
+if IS_WINDOWS:
+    import ctypes
+
 # 配置日志
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
