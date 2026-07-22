@@ -18,7 +18,7 @@ echo.
 schtasks /delete /tn "WorkBuddy_Daily_Checkin" /f >nul 2>&1
 
 :: 创建计划任务：用户登录时运行，延迟 2 分钟
-schtasks /create /tn "WorkBuddy_Daily_Checkin" /tr "\"%BAT_PATH%\"" /sc ONLOGON /delay 0000:02:00 /rl HIGHEST /f
+schtasks /create /tn "WorkBuddy_Daily_Checkin" /tr "\"%BAT_PATH%\"" /sc ONLOGON /delay 0002:00 /rl HIGHEST /f
 
 if %errorlevel%==0 (
     echo.
