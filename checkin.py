@@ -69,9 +69,11 @@ AVATAR_IMAGE = os.path.join(IMAGES_DIR, AVATAR_IMAGE_NAME)
 CLAIM_BUTTON_IMAGE = os.path.join(IMAGES_DIR, CLAIM_BUTTON_IMAGE_NAME)
 
 # 等待时间（秒）
-APP_LAUNCH_WAIT = 10 if IS_MACOS else 8  # macOS 启动稍慢
+APP_LAUNCH_WAIT = 12 if IS_MACOS else 10  # 登录时桌面加载可能较慢
+WINDOW_WAIT_TIMEOUT = 60                  # 等待 WorkBuddy 窗口出现的最大秒数
+SCREEN_GRAB_RETRY_DELAY = 5               # screen grab failed 时的额外等待
 CLICK_WAIT = 2
-MAX_SEARCH_ATTEMPTS = 10
+MAX_SEARCH_ATTEMPTS = 15                  # 登录场景下增加重试次数
 SEARCH_INTERVAL = 2
 CONFIDENCE = 0.8
 # ==============================
@@ -144,6 +146,92 @@ def check_reference_images():
     return True
 
 
+def bring_workbuddy_to_front():
+    """将 WorkBuddy 窗口置顶，确保能被截图识别"""
+    if IS_MACOS:
+        # macOS: 使用 osascript 激活应用
+        try:
+            subprocess.run([
+                "osascript", "-e",
+                'tell application "WorkBuddy" to activate'
+            ], check=False, timeout=5)
+            return True
+        except Exception as e:
+            logger.warning(f"macOS 置顶 WorkBuddy 失败: {e}")
+            return False
+    else:
+        # Windows: 使用 ctypes 直接调用 Win32 API，比 pygetwindow 更稳定
+        try:
+            user32 = ctypes.windll.user32
+            hwnd = user32.FindWindowW(None, "WorkBuddy")
+            if not hwnd:
+                return False
+
+            # SW_RESTORE = 9, SW_SHOW = 5
+            user32.ShowWindow(hwnd, 9)
+            user32.SetForegroundWindow(hwnd)
+
+            # 再最大化一下确保露出来（如果窗口在屏幕外也有效）
+            time.sleep(0.3)
+            user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE = 3
+            time.sleep(0.3)
+            user32.SetForegroundWindow(hwnd)
+            return True
+        except Exception as e:
+            logger.warning(f"Windows 置顶 WorkBuddy 失败: {e}")
+            return False
+
+
+def is_screen_grab_available():
+    """检查当前是否可以正常截屏（用于登录后桌面未完全初始化的情况）"""
+    try:
+        import pyautogui
+        screenshot = pyautogui.screenshot()
+        return screenshot.size[0] > 0 and screenshot.size[1] > 0
+    except Exception as e:
+        logger.warning(f"当前无法截屏: {e}")
+        return False
+
+
+def wait_for_desktop_ready():
+    """等待桌面准备好（可截屏）"""
+    logger.info("正在等待桌面/屏幕准备就绪...")
+    start = time.time()
+    while time.time() - start < WINDOW_WAIT_TIMEOUT:
+        if is_screen_grab_available():
+            logger.info("桌面已准备就绪")
+            return True
+        time.sleep(2)
+    logger.error("桌面长时间无法截屏，可能是权限或显示驱动未加载")
+    return False
+
+
+def wait_for_workbuddy_window():
+    """等待 WorkBuddy 窗口出现并可交互"""
+    logger.info("正在等待 WorkBuddy 窗口出现...")
+    start = time.time()
+
+    while time.time() - start < WINDOW_WAIT_TIMEOUT:
+        if IS_MACOS:
+            # macOS 简单等待
+            time.sleep(1)
+            return True
+        else:
+            # Windows: 使用 ctypes 检查窗口是否存在
+            try:
+                user32 = ctypes.windll.user32
+                hwnd = user32.FindWindowW(None, "WorkBuddy")
+                if hwnd:
+                    logger.info("WorkBuddy 窗口已出现")
+                    return True
+            except Exception:
+                pass
+        time.sleep(1)
+
+    logger.error(f"等待 {WINDOW_WAIT_TIMEOUT} 秒后仍未找到 WorkBuddy 窗口")
+    return False
+
+
 def launch_workbuddy():
     """启动 WorkBuddy 应用"""
     logger.info(f"正在启动 WorkBuddy...")
@@ -156,9 +244,6 @@ def launch_workbuddy():
             return False
         try:
             subprocess.Popen(["open", "-a", "WorkBuddy"])
-            logger.info(f"WorkBuddy 已启动，等待 {APP_LAUNCH_WAIT} 秒加载...")
-            time.sleep(APP_LAUNCH_WAIT)
-            return True
         except Exception as e:
             logger.error(f"启动 WorkBuddy 失败: {e}")
             return False
@@ -171,12 +256,30 @@ def launch_workbuddy():
             return False
         try:
             subprocess.Popen([WORKBUDDY_PATH])
-            logger.info(f"WorkBuddy 已启动，等待 {APP_LAUNCH_WAIT} 秒加载...")
-            time.sleep(APP_LAUNCH_WAIT)
-            return True
         except Exception as e:
             logger.error(f"启动 WorkBuddy 失败: {e}")
             return False
+
+    # 等待窗口出现
+    if not wait_for_workbuddy_window():
+        return False
+
+    # 将窗口置顶
+    if bring_workbuddy_to_front():
+        logger.info("WorkBuddy 窗口已置顶")
+    else:
+        logger.warning("无法置顶 WorkBuddy 窗口，将继续尝试")
+
+    # 等待桌面/屏幕准备就绪（登录时特别重要）
+    if not wait_for_desktop_ready():
+        return False
+
+    # 再次置顶，确保在屏幕可用后被正确显示
+    bring_workbuddy_to_front()
+
+    logger.info(f"等待 {APP_LAUNCH_WAIT} 秒让 WorkBuddy 加载界面...")
+    time.sleep(APP_LAUNCH_WAIT)
+    return True
 
 
 def find_and_click(image_path, description, confidence=None):
@@ -189,6 +292,8 @@ def find_and_click(image_path, description, confidence=None):
         confidence = CONFIDENCE
 
     logger.info(f"正在搜索 [{description}]...")
+
+    screen_grab_failures = 0
 
     for attempt in range(1, MAX_SEARCH_ATTEMPTS + 1):
         try:
@@ -203,6 +308,17 @@ def find_and_click(image_path, description, confidence=None):
         except pyautogui.ImageNotFoundException:
             pass
         except Exception as e:
+            error_msg = str(e).lower()
+            if "screen grab" in error_msg or "screencapture" in error_msg:
+                screen_grab_failures += 1
+                logger.warning(
+                    f"搜索 [{description}] 第 {attempt} 次截屏失败 "
+                    f"({screen_grab_failures})，等待 {SCREEN_GRAB_RETRY_DELAY} 秒..."
+                )
+                # 尝试重新置顶窗口并等待
+                bring_workbuddy_to_front()
+                time.sleep(SCREEN_GRAB_RETRY_DELAY)
+                continue
             logger.warning(f"搜索 [{description}] 第 {attempt} 次出错: {e}")
 
         if attempt < MAX_SEARCH_ATTEMPTS:
@@ -241,11 +357,20 @@ def do_checkin():
     if not launch_workbuddy():
         return False
 
-    # 5. 点击头像/用户名（打开签到面板）
+    # 5. 再次确保 WorkBuddy 在最前面
+    bring_workbuddy_to_front()
+
+    # 6. 点击头像/用户名（打开签到面板）
     if not find_and_click(AVATAR_IMAGE, "头像/用户名"):
+        logger.error("未能识别头像，可能原因：")
+        logger.error("  1. WorkBuddy 未登录或界面未加载完成")
+        logger.error("  2. 当前有全屏应用（如游戏）遮挡了 WorkBuddy 窗口")
+        logger.error("  3. 参考截图 avatar.png 与实际界面不符")
+        logger.error("  4. 屏幕分辨率/DPI 缩放发生变化")
+        logger.error("  5. 登录后桌面尚未完全初始化（请增加计划任务延迟时间）")
         return False
 
-    # 6. 点击"领取"按钮
+    # 7. 点击"领取"按钮
     if not find_and_click(CLAIM_BUTTON_IMAGE, "领取按钮"):
         return False
 
