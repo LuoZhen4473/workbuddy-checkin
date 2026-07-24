@@ -77,6 +77,7 @@ APP_LAUNCH_WAIT = 12 if IS_MACOS else 10  # 登录时桌面加载可能较慢
 WINDOW_WAIT_TIMEOUT = 60                  # 等待 WorkBuddy 窗口出现的最大秒数
 SCREEN_GRAB_RETRY_DELAY = 5               # screen grab failed 时的额外等待
 CLICK_WAIT = 2
+CREDITS_PANEL_WAIT = 20                   # 点击头像后，等待积分/领取界面加载
 MAX_SEARCH_ATTEMPTS = 15                  # 登录场景下增加重试次数
 SEARCH_INTERVAL = 2
 CONFIDENCE = 0.8
@@ -374,7 +375,11 @@ def do_checkin():
         logger.error("  5. 登录后桌面尚未完全初始化（请增加计划任务延迟时间）")
         return False
 
-    # 7. 点击"领取"按钮
+    # 7. 等待积分/领取界面加载完成（点击头像后界面不会立即出现）
+    logger.info(f"等待 {CREDITS_PANEL_WAIT} 秒让积分/领取界面加载...")
+    time.sleep(CREDITS_PANEL_WAIT)
+
+    # 8. 点击"领取"按钮
     if not find_and_click(CLAIM_BUTTON_IMAGE, "领取按钮"):
         return False
 
